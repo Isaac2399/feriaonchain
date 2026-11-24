@@ -3,7 +3,7 @@ name = "sena-feria"
 version = "0.1.0"
 edition = "2021"
 publish = false
-description = "Seña de la feria del agricultor: el contrato guarda el dinero hasta la entrega, la devolución o el vencimiento."
+description = "Farmers-market deposit: the contract holds the funds until delivery, refund, or expiry."
 license = "Apache-2.0"
 
 [lib]

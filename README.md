@@ -38,32 +38,34 @@ El plazo tampoco es una fecha de calendario. Es una cantidad de ledgers a partir
 
 El código está en `src/lib.rs`.
 
+El contrato se llama `FairDeposit`. Las funciones están en inglés; esta explicación sigue en español.
+
 | Función | Quién firma | Qué pasa |
 | --- | --- | --- |
-| `apartar` | el comprador | Pasa la seña al contrato y devuelve el número de esa seña. |
-| `confirmar_entrega` | el productor | Si el plazo sigue vigente, le paga la seña. |
-| `devolver` | el productor | Devuelve la seña al comprador. |
-| `reclamar_vencida` | el comprador | Si el plazo ya pasó, recupera la seña. |
-| `consultar` | nadie | Lee la seña. No mueve dinero. |
+| `reserve` | el comprador | Pasa la seña al contrato y devuelve el número de esa seña. |
+| `confirm_delivery` | el productor | Si el plazo sigue vigente, le paga la seña. |
+| `refund` | el productor | Devuelve la seña al comprador. |
+| `claim_expired` | el comprador | Si el plazo ya pasó, recupera la seña. |
+| `get_deposit` | nadie | Lee la seña. No mueve dinero. |
 
-Cada seña guarda comprador, productor, token, monto, ledger de vencimiento, estado y una descripción corta del producto (máximo 64 bytes). El estado es `Apartada`, `Entregada` o `Devuelta`.
+Cada seña guarda comprador, productor, token, monto, ledger de vencimiento, estado y una descripción corta del producto (máximo 64 bytes). El estado es `Held` (apartada), `Delivered` (entregada) o `Refunded` (devuelta).
 
-La firma se exige con `require_auth` antes de mover el token. El estado se guarda como cerrado antes de la transferencia de salida, para no pagar la misma seña dos veces. Al apartar, confirmar, devolver o reclamar, el contrato publica un evento: `apartada`, `entregada`, `devuelta` o `reclamo`.
+La firma se exige con `require_auth` antes de mover el token. El estado se guarda como cerrado antes de la transferencia de salida, para no pagar la misma seña dos veces. Al apartar, confirmar, devolver o reclamar, el contrato publica un evento: `reserved`, `delivered`, `refunded` o `claimed`.
 
 Si algo no cuadra, el contrato se detiene con uno de estos errores:
 
 | Código | Error | Cuándo |
 | --- | --- | --- |
-| 1 | `MontoInvalido` | El monto es cero o negativo. |
-| 2 | `MismaPersona` | Comprador y productor son la misma cuenta. |
-| 3 | `PlazoInvalido` | El plazo es cero, o no cabe en el número de ledger. |
-| 4 | `DescripcionInvalida` | La descripción va vacía o pasa de 64 bytes. |
-| 5 | `NoExiste` | Ese número de seña no está. |
-| 6 | `YaCerrada` | La seña ya se entregó o ya se devolvió. |
-| 7 | `NoEsProductor` | Quien llama no es el productor de esa seña. |
-| 8 | `NoEsComprador` | Quien llama no es el comprador de esa seña. |
-| 9 | `AunNoVence` | El comprador reclama antes de tiempo. |
-| 10 | `YaVencio` | El productor confirma después del plazo. |
+| 1 | `InvalidAmount` | El monto es cero o negativo. |
+| 2 | `SameParty` | Comprador y productor son la misma cuenta. |
+| 3 | `InvalidDeadline` | El plazo es cero, o no cabe en el número de ledger. |
+| 4 | `InvalidDescription` | La descripción va vacía o pasa de 64 bytes. |
+| 5 | `NotFound` | Ese número de seña no está. |
+| 6 | `AlreadyClosed` | La seña ya se entregó o ya se devolvió. |
+| 7 | `NotProducer` | Quien llama no es el productor de esa seña. |
+| 8 | `NotBuyer` | Quien llama no es el comprador de esa seña. |
+| 9 | `NotYetExpired` | El comprador reclama antes de tiempo. |
+| 10 | `AlreadyExpired` | El productor confirma después del plazo. |
 
 ## Cómo probarlo
 
@@ -78,16 +80,16 @@ cargo test
 
 | Prueba | Qué demuestra |
 | --- | --- |
-| `maria_aparta_el_queso_y_carlos_confirma_la_entrega` | La seña sale del comprador, queda en el contrato y, al confirmar, pasa al productor. |
-| `el_productor_puede_devolver_la_sena` | El productor puede devolverla completa. |
-| `vencida_la_sena_el_comprador_la_reclama` | Pasado el plazo, el comprador recupera el dinero. |
-| `en_el_ledger_del_vencimiento_el_productor_todavia_puede_cobrar` | En el ledger exacto del vencimiento la entrega sigue siendo válida. |
-| `dos_senas_no_se_mezclan` | Dos apartados (queso y miel) tienen números distintos y no comparten el saldo. |
-| `no_se_puede_reclamar_antes_de_tiempo` | Reclamar temprano falla y el dinero sigue en el contrato. |
-| `el_productor_no_cobra_si_ya_vencio` | Confirmar tarde falla y el productor no recibe nada. |
-| `otra_persona_no_confirma_ni_devuelve_ni_reclama` | Una tercera cuenta no puede cerrar la seña. |
-| `no_se_puede_cerrar_dos_veces` | Después de entregar, confirmar o devolver otra vez falla. |
-| `rechaza_datos_invalidos_y_no_mueve_dinero` | Monto, personas, plazo o descripción inválidos no mueven saldo. Consultar una seña que no existe falla. |
-| `sin_la_firma_del_comprador_no_se_aparta` | Sin la autorización del comprador, `apartar` se detiene. |
+| `buyer_reserves_cheese_and_producer_confirms_delivery` | La seña sale del comprador, queda en el contrato y, al confirmar, pasa al productor. |
+| `producer_can_refund_the_deposit` | El productor puede devolverla completa. |
+| `buyer_claims_the_deposit_after_it_expires` | Pasado el plazo, el comprador recupera el dinero. |
+| `producer_can_still_be_paid_on_the_expiry_ledger` | En el ledger exacto del vencimiento la entrega sigue siendo válida. |
+| `two_deposits_do_not_share_funds` | Dos apartados (queso y miel) tienen números distintos y no comparten el saldo. |
+| `buyer_cannot_claim_before_the_deadline` | Reclamar temprano falla y el dinero sigue en el contrato. |
+| `producer_cannot_collect_after_expiry` | Confirmar tarde falla y el productor no recibe nada. |
+| `a_third_party_cannot_close_the_deposit` | Una tercera cuenta no puede cerrar la seña. |
+| `a_deposit_cannot_be_closed_twice` | Después de entregar, confirmar o devolver otra vez falla. |
+| `invalid_input_is_rejected_and_moves_no_funds` | Monto, personas, plazo o descripción inválidos no mueven saldo. Consultar una seña que no existe falla. |
+| `reserve_fails_without_the_buyers_signature` | Sin la autorización del comprador, `reserve` se detiene. |
 
 No borres `Cargo.lock`. Fija las versiones con las que estas pruebas pasan. En particular, deja `ed25519-dalek` en 2.2.0: el SDK 22 declara `>=2` y una 3.x más nueva no compila con esa versión del SDK.

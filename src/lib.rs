@@ -1,10 +1,10 @@
-//! Seña de la feria del agricultor.
+//! Farmers-market deposit.
 //!
-//! El comprador aparta un producto y el contrato guarda la seña.
-//! El dinero sale solo por uno de estos caminos:
-//! - el productor confirma la entrega y se queda con la seña;
-//! - el productor la devuelve;
-//! - se vence el plazo y el comprador la reclama.
+//! The buyer reserves a product and the contract holds the deposit.
+//! The funds leave only one of these ways:
+//! - the producer confirms delivery and keeps the deposit;
+//! - the producer refunds it;
+//! - the deadline passes and the buyer claims it back.
 
 #![no_std]
 
@@ -13,228 +13,229 @@ use soroban_sdk::{
     Address, Env, String,
 };
 
-const MAX_DESCRIPCION: u32 = 64;
+const MAX_DESCRIPTION: u32 = 64;
 
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
 pub enum Error {
-    MontoInvalido = 1,
-    MismaPersona = 2,
-    PlazoInvalido = 3,
-    DescripcionInvalida = 4,
-    NoExiste = 5,
-    YaCerrada = 6,
-    NoEsProductor = 7,
-    NoEsComprador = 8,
-    AunNoVence = 9,
-    YaVencio = 10,
+    InvalidAmount = 1,
+    SameParty = 2,
+    InvalidDeadline = 3,
+    InvalidDescription = 4,
+    NotFound = 5,
+    AlreadyClosed = 6,
+    NotProducer = 7,
+    NotBuyer = 8,
+    NotYetExpired = 9,
+    AlreadyExpired = 10,
 }
 
-/// Apartada: la seña sigue dentro del contrato.
-/// Entregada: el productor confirmó y ya recibió el dinero.
-/// Devuelta: el dinero volvió al comprador.
+/// Held: the deposit is still inside the contract.
+/// Delivered: the producer confirmed and already received the funds.
+/// Refunded: the funds went back to the buyer.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum Estado {
-    Apartada,
-    Entregada,
-    Devuelta,
+pub enum Status {
+    Held,
+    Delivered,
+    Refunded,
 }
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Sena {
-    pub comprador: Address,
-    pub productor: Address,
+pub struct Deposit {
+    pub buyer: Address,
+    pub producer: Address,
     pub token: Address,
-    pub monto: i128,
-    pub vence_en: u32,
-    pub estado: Estado,
-    pub producto: String,
+    pub amount: i128,
+    pub expires_at: u32,
+    pub status: Status,
+    pub product: String,
 }
 
 #[contracttype]
 #[derive(Clone)]
 enum DataKey {
-    Sena(u32),
-    Contador,
+    Deposit(u32),
+    Counter,
 }
 
 #[contract]
-pub struct SenaFeria;
+pub struct FairDeposit;
 
 #[contractimpl]
-impl SenaFeria {
-    /// El comprador deposita la seña. Devuelve el número de la seña.
+impl FairDeposit {
+    /// The buyer locks the deposit. Returns the deposit id.
     ///
-    /// `plazo_ledgers` es cuántos ledgers dura el apartado, contados
-    /// desde el ledger actual. En testnet un ledger dura unos 5 segundos.
-    pub fn apartar(
+    /// `duration_ledgers` is how many ledgers the reservation lasts,
+    /// counted from the current ledger. On testnet a ledger is about 5 seconds.
+    pub fn reserve(
         env: Env,
-        comprador: Address,
-        productor: Address,
+        buyer: Address,
+        producer: Address,
         token: Address,
-        monto: i128,
-        producto: String,
-        plazo_ledgers: u32,
+        amount: i128,
+        product: String,
+        duration_ledgers: u32,
     ) -> u32 {
-        comprador.require_auth();
+        buyer.require_auth();
 
-        if monto <= 0 {
-            panic_with_error!(&env, Error::MontoInvalido);
+        if amount <= 0 {
+            panic_with_error!(&env, Error::InvalidAmount);
         }
-        if comprador == productor {
-            panic_with_error!(&env, Error::MismaPersona);
+        if buyer == producer {
+            panic_with_error!(&env, Error::SameParty);
         }
-        if plazo_ledgers == 0 {
-            panic_with_error!(&env, Error::PlazoInvalido);
+        if duration_ledgers == 0 {
+            panic_with_error!(&env, Error::InvalidDeadline);
         }
-        let largo = producto.len();
-        if largo == 0 || largo > MAX_DESCRIPCION {
-            panic_with_error!(&env, Error::DescripcionInvalida);
+        let length = product.len();
+        if length == 0 || length > MAX_DESCRIPTION {
+            panic_with_error!(&env, Error::InvalidDescription);
         }
 
-        let vence_en = env
+        let expires_at = env
             .ledger()
             .sequence()
-            .checked_add(plazo_ledgers)
-            .unwrap_or_else(|| panic_with_error!(&env, Error::PlazoInvalido));
+            .checked_add(duration_ledgers)
+            .unwrap_or_else(|| panic_with_error!(&env, Error::InvalidDeadline));
 
-        // Primero entra el dinero. Si el transfer falla, no queda una seña vacía.
-        token::Client::new(&env, &token).transfer(
-            &comprador,
-            &env.current_contract_address(),
-            &monto,
-        );
+        // Take the funds first. If the transfer fails, no empty deposit is stored.
+        token::Client::new(&env, &token).transfer(&buyer, &env.current_contract_address(), &amount);
 
-        let id = siguiente_id(&env);
-        let sena = Sena {
-            comprador: comprador.clone(),
-            productor,
+        let id = next_id(&env);
+        let deposit = Deposit {
+            buyer: buyer.clone(),
+            producer,
             token,
-            monto,
-            vence_en,
-            estado: Estado::Apartada,
-            producto,
+            amount,
+            expires_at,
+            status: Status::Held,
+            product,
         };
-        env.storage().persistent().set(&DataKey::Sena(id), &sena);
+        env.storage()
+            .persistent()
+            .set(&DataKey::Deposit(id), &deposit);
 
-        env.events().publish((symbol_short!("apartada"), id), monto);
+        env.events()
+            .publish((symbol_short!("reserved"), id), amount);
 
         id
     }
 
-    /// El productor confirma que entregó el producto y retira la seña.
-    /// Solo puede hacerlo mientras el plazo siga vigente.
-    pub fn confirmar_entrega(env: Env, productor: Address, id: u32) {
-        productor.require_auth();
+    /// The producer confirms delivery and withdraws the deposit.
+    /// This is allowed only while the deadline is still open.
+    pub fn confirm_delivery(env: Env, producer: Address, id: u32) {
+        producer.require_auth();
 
-        let mut sena = leer(&env, id);
-        exigir_abierta(&env, &sena);
-        if productor != sena.productor {
-            panic_with_error!(&env, Error::NoEsProductor);
+        let mut deposit = load(&env, id);
+        require_open(&env, &deposit);
+        if producer != deposit.producer {
+            panic_with_error!(&env, Error::NotProducer);
         }
-        if !vigente(&env, &sena) {
-            panic_with_error!(&env, Error::YaVencio);
+        if !is_open(&env, &deposit) {
+            panic_with_error!(&env, Error::AlreadyExpired);
         }
 
-        // Se cierra antes de mover el dinero para no pagarlo dos veces.
-        sena.estado = Estado::Entregada;
-        env.storage().persistent().set(&DataKey::Sena(id), &sena);
+        // Close the deposit before moving funds so it cannot be paid twice.
+        deposit.status = Status::Delivered;
+        env.storage()
+            .persistent()
+            .set(&DataKey::Deposit(id), &deposit);
 
-        token::Client::new(&env, &sena.token).transfer(
+        token::Client::new(&env, &deposit.token).transfer(
             &env.current_contract_address(),
-            &sena.productor,
-            &sena.monto,
+            &deposit.producer,
+            &deposit.amount,
         );
 
         env.events()
-            .publish((symbol_short!("entregada"), id), sena.monto);
+            .publish((symbol_short!("delivered"), id), deposit.amount);
     }
 
-    /// El productor devuelve la seña. Puede hacerlo en cualquier momento
-    /// mientras la seña siga apartada, incluso después del plazo.
-    pub fn devolver(env: Env, productor: Address, id: u32) {
-        productor.require_auth();
+    /// The producer refunds the deposit. This works at any time
+    /// while the deposit is still held, including after the deadline.
+    pub fn refund(env: Env, producer: Address, id: u32) {
+        producer.require_auth();
 
-        let mut sena = leer(&env, id);
-        exigir_abierta(&env, &sena);
-        if productor != sena.productor {
-            panic_with_error!(&env, Error::NoEsProductor);
+        let mut deposit = load(&env, id);
+        require_open(&env, &deposit);
+        if producer != deposit.producer {
+            panic_with_error!(&env, Error::NotProducer);
         }
 
-        sena.estado = Estado::Devuelta;
-        env.storage().persistent().set(&DataKey::Sena(id), &sena);
+        deposit.status = Status::Refunded;
+        env.storage()
+            .persistent()
+            .set(&DataKey::Deposit(id), &deposit);
 
-        token::Client::new(&env, &sena.token).transfer(
+        token::Client::new(&env, &deposit.token).transfer(
             &env.current_contract_address(),
-            &sena.comprador,
-            &sena.monto,
+            &deposit.buyer,
+            &deposit.amount,
         );
 
         env.events()
-            .publish((symbol_short!("devuelta"), id), sena.monto);
+            .publish((symbol_short!("refunded"), id), deposit.amount);
     }
 
-    /// Pasado el plazo, el comprador recupera la seña si nadie la cerró.
-    pub fn reclamar_vencida(env: Env, comprador: Address, id: u32) {
-        comprador.require_auth();
+    /// After the deadline, the buyer takes the deposit back if nobody closed it.
+    pub fn claim_expired(env: Env, buyer: Address, id: u32) {
+        buyer.require_auth();
 
-        let mut sena = leer(&env, id);
-        exigir_abierta(&env, &sena);
-        if comprador != sena.comprador {
-            panic_with_error!(&env, Error::NoEsComprador);
+        let mut deposit = load(&env, id);
+        require_open(&env, &deposit);
+        if buyer != deposit.buyer {
+            panic_with_error!(&env, Error::NotBuyer);
         }
-        if vigente(&env, &sena) {
-            panic_with_error!(&env, Error::AunNoVence);
+        if is_open(&env, &deposit) {
+            panic_with_error!(&env, Error::NotYetExpired);
         }
 
-        sena.estado = Estado::Devuelta;
-        env.storage().persistent().set(&DataKey::Sena(id), &sena);
+        deposit.status = Status::Refunded;
+        env.storage()
+            .persistent()
+            .set(&DataKey::Deposit(id), &deposit);
 
-        token::Client::new(&env, &sena.token).transfer(
+        token::Client::new(&env, &deposit.token).transfer(
             &env.current_contract_address(),
-            &sena.comprador,
-            &sena.monto,
+            &deposit.buyer,
+            &deposit.amount,
         );
 
         env.events()
-            .publish((symbol_short!("reclamo"), id), sena.monto);
+            .publish((symbol_short!("claimed"), id), deposit.amount);
     }
 
-    /// Lee una seña. Falla si ese número no existe.
-    pub fn consultar(env: Env, id: u32) -> Sena {
-        leer(&env, id)
-    }
-}
-
-fn vigente(env: &Env, sena: &Sena) -> bool {
-    env.ledger().sequence() <= sena.vence_en
-}
-
-fn exigir_abierta(env: &Env, sena: &Sena) {
-    if sena.estado != Estado::Apartada {
-        panic_with_error!(env, Error::YaCerrada);
+    /// Reads a deposit. Fails if that id does not exist.
+    pub fn get_deposit(env: Env, id: u32) -> Deposit {
+        load(&env, id)
     }
 }
 
-fn leer(env: &Env, id: u32) -> Sena {
+fn is_open(env: &Env, deposit: &Deposit) -> bool {
+    env.ledger().sequence() <= deposit.expires_at
+}
+
+fn require_open(env: &Env, deposit: &Deposit) {
+    if deposit.status != Status::Held {
+        panic_with_error!(env, Error::AlreadyClosed);
+    }
+}
+
+fn load(env: &Env, id: u32) -> Deposit {
     env.storage()
         .persistent()
-        .get(&DataKey::Sena(id))
-        .unwrap_or_else(|| panic_with_error!(env, Error::NoExiste))
+        .get(&DataKey::Deposit(id))
+        .unwrap_or_else(|| panic_with_error!(env, Error::NotFound))
 }
 
-fn siguiente_id(env: &Env) -> u32 {
-    let actual: u32 = env
-        .storage()
-        .instance()
-        .get(&DataKey::Contador)
-        .unwrap_or(0);
-    let nuevo = actual + 1;
-    env.storage().instance().set(&DataKey::Contador, &nuevo);
-    nuevo
+fn next_id(env: &Env) -> u32 {
+    let current: u32 = env.storage().instance().get(&DataKey::Counter).unwrap_or(0);
+    let next = current + 1;
+    env.storage().instance().set(&DataKey::Counter, &next);
+    next
 }
 
 #[cfg(test)]
